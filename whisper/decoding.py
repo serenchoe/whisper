@@ -15,6 +15,23 @@ if TYPE_CHECKING:
     from .model import Whisper
 
 
+# * inputs
+#   - mel (batch_size, 80, n_frames)
+#     이름은 mel 이라고 되어 있는데, code 상으로는 (batch_size, n_ctx, n_state) 즉, audio feature (context vector) 일 수도 있다. 
+#   - tokenizer 
+#
+# * n_audio 는 audio 개수, 즉 batch_size이다.
+#
+# *   logits = model.logits(x, mel)[:, 0]
+#   - SOT token과 audio_feature를 넣어서 나온 logits 에 대해 [:,0] indexing 을 한다. logits의 shape 은 (n_audio, 1, vocab_size) 이기 때문에 
+#
+# * output
+#     language_tokens : Tensor, shape = (n_audio,)
+#         ids of the most probable language tokens, which appears after the startoftranscript token.
+#     language_probs : List[Dict[str, float]], length = n_audio
+#         list of dictionaries containing the probability distribution over all languages.
+#         아마도 이런 모양일 듯.
+#         [ {"en", 0.9}, {"de", 0.1 } ]
 @torch.no_grad()
 def detect_language(
     model: "Whisper", mel: Tensor, tokenizer: Tokenizer = None
@@ -142,6 +159,9 @@ class Inference:
 
 
 class PyTorchInference(Inference):
+    # * self.model: "Whisper" = model
+    # Python type hinting.
+    # "Whisper" means Whisper class    
     def __init__(self, model: "Whisper", initial_token_length: int):
         self.model: "Whisper" = model
         self.initial_token_length = initial_token_length
@@ -152,6 +172,13 @@ class PyTorchInference(Inference):
         value_modules = [block.attn.value for block in self.model.decoder.blocks]
         self.kv_modules = key_modules + value_modules
 
+    # * inputs
+    #   tokens : list of tokens so far
+    #   audio_features : context vector from encoder 
+    #
+    # * output
+    #   logits : shape - (N, vocab_size)
+    #          N is number of tokens
     def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
         if not self.kv_cache:
             self.kv_cache, self.hooks = self.model.install_kv_cache_hooks()
@@ -405,6 +432,13 @@ class BeamSearchDecoder(TokenDecoder):
 
 
 class LogitFilter:
+    # inputs
+    #  tokesn : all tokens so far including SOT
+    #  logits : per-token logits of the probability distribution at the current step. 
+    #
+    # Ref
+    # ---------------------
+    # Logits: The raw scores produced by the output layer of a neural network before applying an activation function. Logits are real numbers, and there is no constraint on their range.
     def apply(self, logits: Tensor, tokens: Tensor) -> None:
         """Apply any filtering or masking to logits in-place
 
@@ -505,12 +539,31 @@ class ApplyTimestampRules(LogitFilter):
                 logits[k, : self.tokenizer.timestamp_begin] = -np.inf
 
 
+# * attribute
+#   - inference 
+#   - sequence_ranker 
+#   - decoder 
+#   - logit_filters 
+#
+# * 위의 것들이 다 있어야 제대로 decode가 된다. decoder 만으로는 부족하다. 
 class DecodingTask:
     inference: Inference
     sequence_ranker: SequenceRanker
     decoder: TokenDecoder
     logit_filters: List[LogitFilter]
 
+    # * attribute 초기화
+    #   - PyTorchInference
+    #   - MaximumLikelihoodRanker
+    #   - decoder 는 BeamSearchDecoder / GreedyDecoder 중 선택
+    #   - logit_filters에는 option에 따라 아래 filter들이 추가될 수 있다. SuppressBlank / SuppressTokens / ApplyTimestampRules
+    #
+    # * n_ctx 
+    #   n_text_ctx = 448
+    #
+    # * sample_len
+    #   options.sample_len 을 설정할 방법이 없다. 따라서 None 이다. sample_len 은  model.dims.n_text_ctx // 2 = 448/2 = 224 
+    #   최대 224 token (단어) 까지 된다는 의미.
     def __init__(self, model: "Whisper", options: DecodingOptions):
         self.model = model
 
@@ -569,6 +622,8 @@ class DecodingTask:
                 )
             )
 
+    # * decoding option 이 잘못됬는지 체크
+    # * 체크 결과 문제 없으면 option return
     def _verify_options(self, options: DecodingOptions) -> DecodingOptions:
         if options.beam_size is not None and options.best_of is not None:
             raise ValueError("beam_size and best_of can't be given together")
@@ -584,6 +639,11 @@ class DecodingTask:
 
         return options
 
+    # * 상세는 잘 모름.
+    # * prefix 는 beamsearch 에서만 쓰이는 듯.
+    #
+    # * output
+    #   initial token 
     def _get_initial_tokens(self) -> Tuple[int]:
         tokens = list(self.sot_sequence)
 
@@ -612,6 +672,8 @@ class DecodingTask:
 
         return tuple(tokens)
 
+    # * Output
+    #   suppress tokens 
     def _get_suppress_tokens(self) -> Tuple[int]:
         suppress_tokens = self.options.suppress_tokens
 
@@ -641,6 +703,16 @@ class DecodingTask:
 
         return tuple(sorted(set(suppress_tokens)))
 
+    # * input
+    #   mel
+    #
+    # * output 
+    #   audio_features
+    #
+    # * 입력으로 mel 이라고 되어 있지만 audio_features를 넣는 것도 가능하다.
+    #
+    # * if mel.shape[-2:] == (self.model.dims.n_audio_ctx, self.model.dims.n_audio_state):
+    #   이미 mel 입력이 audio_features 라는 뜻이다.`
     def _get_audio_features(self, mel: Tensor):
         if self.options.fp16:
             mel = mel.half()
@@ -663,6 +735,12 @@ class DecodingTask:
 
         return audio_features
 
+    # * input
+    #   - audio_features
+    #   - tokens
+    #
+    # * output
+    #   - languages, lang_probs
     def _detect_language(self, audio_features: Tensor, tokens: Tensor):
         languages = [self.options.language] * audio_features.shape[0]
         lang_probs = None
@@ -677,6 +755,16 @@ class DecodingTask:
 
         return languages, lang_probs
 
+    # * input
+    #   - audio_features
+    #   - tokens : FIXME?
+    #
+    # * output
+    #   - tokens, 
+    #   - sum_logprobs, 
+    #   - no_speech_probs
+    #
+    # * input의 tokens 을 시작으로, sample_len (max token 수) 만큼 loop 을 돌면서 decoding (self.inference.logits)을 한다. loop 을 돌때마다, logits 을 받아서 tokens 를 갱신한다.(self.decoder.update) completed가 될 때까지 loop 을 반복한다.
     def _main_loop(self, audio_features: Tensor, tokens: Tensor):
         n_batch = tokens.shape[0]
         sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
@@ -709,6 +797,28 @@ class DecodingTask:
 
         return tokens, sum_logprobs, no_speech_probs
 
+    # * input : mel
+    #
+    # * output
+    #   [
+    #     DecodingResult(
+    #     audio_features=features,
+    #     language=language,
+    #     tokens=tokens,
+    #     text=text,
+    #     avg_logprob=avg_logprob,
+    #     no_speech_prob=no_speech_prob,
+    #     temperature=self.options.temperature,
+    #     compression_ratio=compression_ratio(text),) ]
+    #
+    # * n_audio 는 batch size 이므로 입력 audio 의 개수이다. 
+    # * mel 에서 audio_features 를 구한다.
+    # * tokens 는 initial_tokens 로 시작한다. 
+    # * _main_loop() 을 돌려서 결과 tokens 를 얻는다. 
+    # * decoder.finalize(tokens, sum_logprobs) 로 final candidates for each group 을 얻는다.
+    # * sequence_ranker.rank(tokens, sum_logprobs) 로 top-ranked sample in each group 을 선택한다. 
+    #
+    # * group 이 뭔지 모르겠다. FIXME
     @torch.no_grad()
     def run(self, mel: Tensor) -> List[DecodingResult]:
         self.decoder.reset()
@@ -788,7 +898,17 @@ class DecodingTask:
             )
         ]
 
-
+# inputs
+#   mel : shape is (*, 80, 3000)
+#     -  * is batch size
+#     -  80 is the number of Mel-frequency filters (mel bands)
+#     -  3000 is the number of frames in a chunk.
+#
+#    chunk = 3000 frames
+#    frame = 80 mel bands 
+#
+# * mel 이 2차원이면 3차원으로 unsqueeze
+#   (80, 3000) => (1, 80, 3000)
 @torch.no_grad()
 def decode(
     model: "Whisper",

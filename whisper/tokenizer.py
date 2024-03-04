@@ -128,6 +128,9 @@ TO_LANGUAGE_CODE = {
 }
 
 
+# * tokenizer: "GPT2TokenizerFast"
+#   GPT2TokenizerFast 라는 class 가 어디엔가 정의되어 있다.
+#
 @dataclass
 class Tokenizer:
     """A thin wrapper around `tiktoken` providing quick access to special tokens"""
@@ -158,9 +161,13 @@ class Tokenizer:
 
         self.sot_sequence = tuple(sot_sequence)
 
+    # * text (string)를 받아서 token_id 를 return 한다. 
+    # 
     def encode(self, text, **kwargs):
         return self.encoding.encode(text, **kwargs)
 
+    # * token_id (string)를 받아서 text 를 return 한다. 
+    #
     def decode(self, token_ids: List[int], **kwargs) -> str:
         token_ids = [t for t in token_ids if t < self.timestamp_begin]
         return self.encoding.decode(token_ids, **kwargs)

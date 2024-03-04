@@ -35,6 +35,39 @@ if TYPE_CHECKING:
     from .model import Whisper
 
 
+
+# * inputs
+#   - audio : shape = (*)
+#   - temperature : sampling temperature 자세한 건 모름. FIXME
+#   - compression_ratio_threshold. 왜 쓰는건지??
+#   - condition_on_previous_text : 이전 output 을 다음 window 의 prompt 로 제공
+#
+# * output
+#   (text, segments, language) 
+#   여기 segments 는 아래의 all_segments 이다. 
+#
+# * mel = log_mel_spectrogram(audio)
+#   mel의 shape 은 (80, n_frames)
+#
+# * seek 을 증가시켜가면서 segment 를 얻는다. seek 의 단위는 frame
+#
+# * timestamp_offset = float(seek * HOP_LENGTH / SAMPLE_RATE)
+#   단위는 frame * (samples/frame) / (samples/sec) = sec 이다. 
+#
+# * segment = pad_or_trim(mel[:, seek:], N_FRAMES).to(model.device).to(dtype)
+#   mel 은 (80, n_frames) 이므로 mel[:, seek:] 은 seek 부터 N_FRAMES 만큼의 frame 을 자르는 것이다. shape = (80, N_FRAMES) = (80, 3000)
+#
+# * segment_duration = segment.shape[-1] * HOP_LENGTH / SAMPLE_RATE
+#   N_FRAMES * HOP_LENGTH / SAMPLE_RATE
+#   단위는 frames * (samples/frame) / (samples/sec) = sec 이다. 즉 segment 가 몇 초인가 이다.
+#
+# * decode_with_fallback
+#  
+# * add_segment
+#   text_tokens 를 tokenizer decode를 통해 text 를 얻는다. all_segments 에 text 를 포함한 start/end/result 를 append 한다.
+#
+# * transcribe 의 output 에서 단순히 transcription만 필요하면 text 를 쓴다. 하지만 timestamp 가 들어간 text format 을 원하면 sements 를 쓴다. 
+
 def transcribe(
     model: "Whisper",
     audio: Union[str, np.ndarray, torch.Tensor],

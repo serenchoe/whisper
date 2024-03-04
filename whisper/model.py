@@ -50,6 +50,26 @@ class Conv1d(nn.Conv1d):
         )
 
 
+# * inputs
+#   - length : n_ctx   
+#     ('n_audio_ctx': 1500)
+#   - channels : n_state  
+#     ('n_audio_state': 384)  
+#
+# * torch.arange(length) = Tensor ([0,1,2,...,length-1]) 
+#
+# * tensor([0, 1, 2, 3, 4])[:, np.newaxis] = 
+# tensor([[0],
+#         [1],
+#         [2],
+#         [3],
+#         [4]])
+#
+# * inv_timescales : shape (1, length)
+# * scaled_time : (length, 1) x (1, channels // 2) = (length, channels // 2) = (1500, 192)
+#
+# * output
+#   (length, channels) = (n_audio_ctx, n_audio_state) = (1500, 384)
 def sinusoids(length, channels, max_timescale=10000):
     """Returns sinusoids for positional embedding"""
     assert channels % 2 == 0
@@ -59,6 +79,7 @@ def sinusoids(length, channels, max_timescale=10000):
     return torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=1)
 
 
+# * n_state 가 입력으로 들어가서 n_state 가 출력으로 나온다. 
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_state: int, n_head: int):
         super().__init__()
@@ -68,6 +89,17 @@ class MultiHeadAttention(nn.Module):
         self.value = Linear(n_state, n_state)
         self.out = Linear(n_state, n_state)
 
+    # * inputs
+    #   x
+    #   xa
+    #   mask
+    #   kv_cache
+    #
+    # * self attention 일 때는 x와 self.key/self.value 를 쓰는 것 같다.
+    # * cross attention 일 때는 xa와 kv_cache 를 쓰는 것 같다.  
+    #
+    # * x 는 (*,*,n_state) 의 shape 을 가질 듯. FIXME
+    # * xa 도 (*,*,n_state) 의 shape 을 가질 듯. FIXME`
     def forward(
         self,
         x: Tensor,
@@ -107,7 +139,12 @@ class MultiHeadAttention(nn.Module):
         w = F.softmax(qk, dim=-1).to(q.dtype)
         return (w @ v).permute(0, 2, 1, 3).flatten(start_dim=2), qk.detach()
 
-
+# * n_state 가 입력으로 들어가서 n_state 가 출력으로 나온다. 
+#
+# * input 
+# - n_state : state 
+# - n_head : head 수
+# - cross_attention : 기본은 self attention이다. 
 class ResidualAttentionBlock(nn.Module):
     def __init__(self, n_state: int, n_head: int, cross_attention: bool = False):
         super().__init__()
@@ -126,6 +163,17 @@ class ResidualAttentionBlock(nn.Module):
         )
         self.mlp_ln = LayerNorm(n_state)
 
+    # * inputs
+    #   x
+    #   xa
+    #   mask
+    #   kv_cache
+    #
+    # * self attention 일 때는 x와 self.attn/self.attn_ln 를 쓰는 것 같다.
+    # * cross attention 일 때는 xa와 self.cross_attn/self.cross_attn_ln 를 쓰는 것 같다.  
+    #
+    # * x 는 (*,*,n_state) 의 shape 을 가질 듯. FIXME
+    # * xa 도 (*,*,n_state) 의 shape 을 가질 듯. FIXME
     def forward(
         self,
         x: Tensor,
@@ -141,6 +189,30 @@ class ResidualAttentionBlock(nn.Module):
 
 
 class AudioEncoder(nn.Module):
+    # * AudioEncoder 입력 (값은 tiny.pt 기준)  FIXME 
+    #   n_mels : mel band 개수? (1 frame)  80
+    #   n_ctx : 입력 embedding 의 size??     1500
+    #   n_state : AudiEncoder 출력 size      384   
+    #   n_head : Attention head 개수??           6 
+    #   n_layer : ResidualAttentionBlock 개수    4
+    #
+    # * Conv1D에서
+    # - channels_in 은 Number of channels in the input image 
+    # - channels_out 은 Number of channels produced by the convolution
+    #
+    # 따라서 self.conv1 은 n_mels (80개 mel band, 즉 1개 frame) 의 입력을 받아서 n_state (크기 384) 의 출력을 내보낸다. n_state 는 positional embedding 의 size 이기도 하다. n_state는 encoder block 의 입력/출력 크기이기도 하다. 
+    #
+    # https://pytorch.org/docs/stable/generated/torch.nn.Conv1d.html#torch.nn.Conv1d
+    #
+    # * PyTorch 모델을 구현할 때 모델 내부적으로 가지고 있으면서, 학습은 필요 없는 tensor들을 사용해야 할 때가 있다. register_buffer 는 이 때 사용한다.
+    #
+    # * n_ctx 는 tiny.pt 모델의 경우 1500 이다. 
+    #  tiny.pt 의 경우 전체 dims 는 아래와 같았다. 
+    #
+    #   'dims': 
+    #     {
+    #       'n_mels': 80, 'n_vocab': 51865, 'n_audio_ctx': 1500, 'n_audio_state': 384, 'n_audio_head': 6, 'n_audio_layer': 4, 'n_text_ctx': 448, 'n_text_state': 384, 'n_text_head': 6, 'n_text_layer': 4
+    #     },     
     def __init__(
         self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
     ):
@@ -154,6 +226,20 @@ class AudioEncoder(nn.Module):
         )
         self.ln_post = LayerNorm(n_state)
 
+    # * inputs 
+    #   x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
+    #   = (batch_size, 80, 1500)
+    #
+    # * x = F.gelu(self.conv1(x))
+    #   x shape = (batch_size, n_state, n_ctx) = (batch_size, 384, 1500)
+    #
+    # * x = x.permute(0, 2, 1)
+    #   x shape = (batch_size, n_ctx, n_state) = (batch_size, 1500, 384)
+    #
+    # * x.shape[1:] ~ (n_ctx, n_state) 
+    #
+    # * output
+    #   (batch_size, n_ctx, n_state)
     def forward(self, x: Tensor):
         """
         x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
@@ -174,6 +260,30 @@ class AudioEncoder(nn.Module):
 
 
 class TextDecoder(nn.Module):
+    # * TextDecoder 입력 (값은 tiny.pt 기준)  FIXME 
+    #   n_vocab : vocab size               51865
+    #   n_ctx : TextDecoder 출력 token 의 max length로 추정됨.     448
+    #   n_state : TextDecoder 출력 size      384   
+    #   n_head : Attention head 개수           6 
+    #   n_layer : ResidualAttentionBlock 개수    4
+    #
+    # * self.token_embedding 
+    #   vocab 의  크기는 n_vocab 이고, embedding vector 의 크기는 n_state 이다.
+    #   https://pytorch.org/docs/stable/generated/torch.nn.Embedding.html
+    #
+    #   (*) 이 들어가면 (*, embedding_dim) 이 출력된다. 현재 embedding_dim 은 n_state 이다. 
+    #
+    # * self.positional_embedding 는 위치 정보를 표현하기 위한 학습 가능한 추가적인 임베딩 층
+    #
+    #  https://heekangpark.github.io/ml-shorts/positional-encoding-vs-positional-embedding
+    # 
+    # * n_ctx 는 tiny.pt 모델의 경우 448 이다. 
+    #  tiny.pt 의 경우 전체 dims 는 아래와 같았다. 
+    # 
+    #   'dims': 
+    #     {
+    #       'n_mels': 80, 'n_vocab': 51865, 'n_audio_ctx': 1500, 'n_audio_state': 384, 'n_audio_head': 6, 'n_audio_layer': 4, 'n_text_ctx': 448, 'n_text_state': 384, 'n_text_head': 6, 'n_text_layer': 4
+    #     }, 
     def __init__(
         self, n_vocab: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
     ):
@@ -193,6 +303,19 @@ class TextDecoder(nn.Module):
         mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
+    # * inputs
+    # - x : decoder input - the text tokens
+    # - xa : encoder 에서 넘어온 encoded audio features. context vector라고도 부름. 이것은 cross attention 을 위해 필요한 듯. 
+    #
+    # * x 의 shape 은 (batch_size, N)  N 은 decode 된 token 개수. (N <= n_ctx)
+    # self.token_embedding(x) 의 shape 은 (batch_size, N, n_state)
+    #
+    # * xa 의 shape = (batch_size, n_mels, n_audio_ctx) = (batch, 80, 1500) 이라고 되어 있는데 맞나? FIXME
+    #
+    # * output
+    # Logits: The raw scores produced by the output layer of a neural network before applying an activation function. Logits are real numbers, and there is no constraint on their range.
+    #
+    # logits 의 shape 은 (N, n_state) x (n_state, vocab_size) = (N, vocab_size)    
     def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
         """
         x : torch.LongTensor, shape = (batch_size, <= n_ctx)
@@ -217,7 +340,12 @@ class TextDecoder(nn.Module):
 
         return logits
 
-
+# * Whisper 가 최상위 모델이다.
+# * dims / encoder / decoder 를 property 로 갖는다. 
+# * torchscript 로 만들면 (trace / script 어떤 방식으로 하든...) 아래 함수들은 포함되려나?  아래 함수들은 복잡한 operator 들이 많이 포함되어 있다.  FIXME
+#   - delete_language
+#   - transcribe
+#   - decode
 class Whisper(nn.Module):
     def __init__(self, dims: ModelDimensions):
         super().__init__()
@@ -253,12 +381,15 @@ class Whisper(nn.Module):
         )
         self.register_buffer("alignment_heads", mask.to_sparse(), persistent=False)
 
+    # * mel 을 입력으로 받아서 audio_features 를 출력한다
     def embed_audio(self, mel: torch.Tensor):
         return self.encoder(mel)
 
+    # * tokens/audio_features 를 입력으로 받아서 logits 를 출력한다.
     def logits(self, tokens: torch.Tensor, audio_features: torch.Tensor):
         return self.decoder(tokens, audio_features)
 
+    # * mel/tokens 를 입력으로 받아서 logits 를 출력한다.
     def forward(
         self, mel: torch.Tensor, tokens: torch.Tensor
     ) -> Dict[str, torch.Tensor]:

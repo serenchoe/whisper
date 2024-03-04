@@ -9,6 +9,12 @@ import torch.nn.functional as F
 
 from .utils import exact_div
 
+# * Chunk is input to AudioEncoder
+# * chunk is 30 seconds. So samples in a chunk is 480000 = 30 * 16000
+# * The number of frames per chunk is Samples/hop_length = 480000 / 160 = 3000
+# * N_MELS : The number of Mel-frequency filters, only 80 is supported. 아래 보면 mel band 의 개수 라고도 나온다. 주파수 대역을 80개의 band 로 나누었다는 의미같다. 
+# https://librosa.org/doc/main/generated/librosa.filters.mel.html
+
 # hard-coded audio hyperparameters
 SAMPLE_RATE = 16000
 N_FFT = 400
@@ -62,6 +68,16 @@ def load_audio(file: str, sr: int = SAMPLE_RATE):
     return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
 
 
+# mel 을 받아서 axis 축으로 length 보다 길면 trim, length 보다 짧으면 pad
+#
+# axis는 가장 마지막 축, length 는 N_FRAMES (3000) 이다. 즉, 3000 frame 으로 맞춘다는 의미. 
+#
+# * inputs
+#   - array : mel
+#     shape (80, n_frames) 
+#
+# * output
+#   - shape (80, N_SAMPLES) = (80, 3000)
 def pad_or_trim(array, length: int = N_SAMPLES, *, axis: int = -1):
     """
     Pad or trim the audio array to N_SAMPLES, as expected by the encoder.
@@ -107,6 +123,14 @@ def mel_filters(device, n_mels: int) -> torch.Tensor:
         return torch.from_numpy(f[f"mel_{n_mels}"]).to(device)
 
 
+# * inputs
+#   - audio : 
+#     shape - (*)
+#
+# * output : mel
+#     torch.Tensor, shape = (80, n_frames)
+#
+# * stft operator가 있다. 
 def log_mel_spectrogram(
     audio: Union[str, np.ndarray, torch.Tensor],
     n_mels: int = 80,
