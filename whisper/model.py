@@ -310,7 +310,7 @@ class TextDecoder(nn.Module):
     # * x 의 shape 은 (batch_size, N)  N 은 decode 된 token 개수. (N <= n_ctx)
     # self.token_embedding(x) 의 shape 은 (batch_size, N, n_state)
     #
-    # * xa 의 shape = (batch_size, n_mels, n_audio_ctx) = (batch, 80, 1500) 이라고 되어 있는데 맞나? FIXME
+    # * xa 의 shape = (batch_size, n_audio_ctx, n_audio_state) = (batch, 15000, 384) 
     #
     # * output
     # Logits: The raw scores produced by the output layer of a neural network before applying an activation function. Logits are real numbers, and there is no constraint on their range.
