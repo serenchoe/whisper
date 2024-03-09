@@ -826,7 +826,7 @@ class DecodingTask:
         n_audio: int = mel.shape[0]
 
         audio_features: Tensor = self._get_audio_features(mel)  # encoder forward pass
-        tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)
+        tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)         # repeat by batch size - n_audio
 
         # detect language if requested, overwriting the language token
         languages, language_probs = self._detect_language(audio_features, tokens)
@@ -847,7 +847,7 @@ class DecodingTask:
         tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
-        audio_features = audio_features[:: self.n_group]
+        audio_features = audio_features[:: self.n_group]                                     # downsample in first axes every 'self.n_group'-th element
         no_speech_probs = no_speech_probs[:: self.n_group]
         assert audio_features.shape[0] == len(no_speech_probs) == n_audio
 
