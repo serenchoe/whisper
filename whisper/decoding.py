@@ -183,7 +183,7 @@ class PyTorchInference(Inference):
         if not self.kv_cache:
             self.kv_cache, self.hooks = self.model.install_kv_cache_hooks()
 
-        if tokens.shape[-1] > self.initial_token_length:
+        if tokens.shape[-1] > self.initial_token_length:            # if the size of last dim of tokens tensor is bigger than initial_token_length 
             # only need to use the last token except in the first forward pass
             tokens = tokens[:, -1:]
 
@@ -237,7 +237,7 @@ class MaximumLikelihoodRanker(SequenceRanker):
 
         # get the sequence with the highest score
         lengths = [[len(t) for t in s] for s in tokens]
-        return [np.argmax(scores(p, l)) for p, l in zip(sum_logprobs, lengths)]
+        return [np.argmax(scores(p, l)) for p, l in zip(sum_logprobs, lengths)]         # a list of indices representing the positions of the maximum scores in the sequences. 
 
 
 class TokenDecoder:
@@ -301,22 +301,23 @@ class GreedyDecoder(TokenDecoder):
         self.temperature = temperature
         self.eot = eot
 
+    # logits : torch.Size([1,51865])
     def update(
         self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
     ) -> Tuple[Tensor, bool]:
         if self.temperature == 0:
-            next_tokens = logits.argmax(dim=-1)
+            next_tokens = logits.argmax(dim=-1)             # tensor containing the indices of the maximum values along the last dimension of the logits tensor. 
         else:
             next_tokens = Categorical(logits=logits / self.temperature).sample()
 
-        logprobs = F.log_softmax(logits.float(), dim=-1)
-        current_logprobs = logprobs[torch.arange(logprobs.shape[0]), next_tokens]
-        sum_logprobs += current_logprobs * (tokens[:, -1] != self.eot)
+        logprobs = F.log_softmax(logits.float(), dim=-1)    # The log-softmax is calculated along the last dimension, providing a log-probability distribution over the last axis.
+        current_logprobs = logprobs[torch.arange(logprobs.shape[0]), next_tokens]       # torch.arange(logprobs.shape[0]) is index to the current batch(?). This is alwasy 0.
+        sum_logprobs += current_logprobs * (tokens[:, -1] != self.eot)                  # Make boolean mask where last element of each batch is True if it is not equal to self.eot. If True, sum_logprobs is updated.
 
-        next_tokens[tokens[:, -1] == self.eot] = self.eot
-        tokens = torch.cat([tokens, next_tokens[:, None]], dim=-1)
+        next_tokens[tokens[:, -1] == self.eot] = self.eot                               # Make boolean mask where last element of each batch is True if it is equal to self.eot. If True, replace with self.eot
+        tokens = torch.cat([tokens, next_tokens[:, None]], dim=-1)                      # appends the values in next_tokens as a new column to each row of the tokens tensor
 
-        completed = (tokens[:, -1] == self.eot).all()
+        completed = (tokens[:, -1] == self.eot).all()       # all elements along the last axis (last dimension) of the tokens are equal to self.eot then True. All batches are finished.
         return tokens, completed
 
     def finalize(self, tokens: Tensor, sum_logprobs: Tensor):
@@ -666,7 +667,7 @@ class DecodingTask:
             )
             tokens = (
                 [self.tokenizer.sot_prev]
-                + prompt_tokens[-(self.n_ctx // 2 - 1) :]
+                + prompt_tokens[-(self.n_ctx // 2 - 1) :]               # Use half of the prompt for tokens
                 + tokens
             )
 
@@ -777,20 +778,20 @@ class DecodingTask:
                 if (
                     i == 0 and self.tokenizer.no_speech is not None
                 ):  # save no_speech_probs
-                    probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
-                    no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
+                    probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)            # calculates the softmax probabilities for a sot column in the logits tensor
+                    no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()        # no_speech prob of each batch
 
                 # now we need to consider the logits at the last token only
-                logits = logits[:, -1]
+                logits = logits[:, -1]                                                          # last element in 2nd dim. 2nd dim is token. So last token
 
                 # apply the logit filters, e.g. for suppressing or applying penalty to
                 for logit_filter in self.logit_filters:
                     logit_filter.apply(logits, tokens)
 
                 # expand the tokens tensor with the selected next tokens
-                tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
+                tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)           # greedy/beam search decoder update
 
-                if completed or tokens.shape[-1] > self.n_ctx:
+                if completed or tokens.shape[-1] > self.n_ctx:                                  # complete or token size in last dim is bigger than limit (n_ctx (448))
                     break
         finally:
             self.inference.cleanup_caching()
@@ -826,7 +827,7 @@ class DecodingTask:
         n_audio: int = mel.shape[0]
 
         audio_features: Tensor = self._get_audio_features(mel)  # encoder forward pass
-        tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)
+        tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)             # initial_tokens are repeated n_audio times in dim 0, 1 times in dim 1. dim 0 is batch dim. So initial_tokens are expanded to batch size. 
 
         # detect language if requested, overwriting the language token
         languages, language_probs = self._detect_language(audio_features, tokens)
@@ -841,33 +842,33 @@ class DecodingTask:
             ]
 
         # repeat text tensors by the group size, for beam search or best-of-n sampling
-        tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
+        tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)    # reshape from [batch, token_length] to [batch x n_group, token_length]
 
         # call the main sampling loop
-        tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
+        tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)     # repeat decoder forward pass
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
-        audio_features = audio_features[:: self.n_group]
+        audio_features = audio_features[:: self.n_group]                                    # selects every self.n_group-th element along the first axis (axis 0) of the audio_features tensor. First axis is for batches. 
         no_speech_probs = no_speech_probs[:: self.n_group]
         assert audio_features.shape[0] == len(no_speech_probs) == n_audio
 
-        tokens = tokens.reshape(n_audio, self.n_group, -1)
-        sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
+        tokens = tokens.reshape(n_audio, self.n_group, -1)                                  # reshpae to [batch, n_group, token_length]
+        sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)                          # reshape from [batch * n group] to [batch, n_group]
 
         # get the final candidates for each group, and slice between the first sampled token and EOT
-        tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
+        tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)                  # greedy/beam search decoder finalize
         tokens: List[List[Tensor]] = [
-            [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]
-            for s in tokens
+            [t[self.sample_begin : (t == tokenizer.eot).nonzero()[0, 0]] for t in s]        # s iterates batches, t iterates groups. So, t means tokens in a group. (t == tokenizer.eot) compares each element of tensor t with eot and returns True/False. The size is still the same with the size of t.
+            for s in tokens                                                                 # (t == tokenizer.eot).nonzero() provides a tensor containing the indices where the value of t is equal to tokenizer.eot
         ]
 
         # select the top-ranked sample in each group
-        selected = self.sequence_ranker.rank(tokens, sum_logprobs)
-        tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
-        texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
+        selected = self.sequence_ranker.rank(tokens, sum_logprobs)                          # selected have size [batch, group]. Value is index to the most scored among group. 
+        tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]         # get tokens from the 'selected' index.
+        texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]                    # get texts from the tokens above
 
-        sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
-        avg_logprobs: List[float] = [
+        sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]        # get sum_logprobs from the 'selected' index.
+        avg_logprobs: List[float] = [                                                       # 
             lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
         ]
 
