@@ -310,7 +310,7 @@ class TextDecoder(nn.Module):
     # * x 의 shape 은 (batch_size, N)  N 은 decode 된 token 개수. (N <= n_ctx)
     # self.token_embedding(x) 의 shape 은 (batch_size, N, n_state)
     #
-    # * xa 의 shape = (batch_size, n_mels, n_audio_ctx) = (batch, 80, 1500) 이라고 되어 있는데 맞나? FIXME
+    # * xa 의 shape = (batch_size, n_audio_ctx, n_audio_state) = (batch, 15000, 384) 
     #
     # * output
     # Logits: The raw scores produced by the output layer of a neural network before applying an activation function. Logits are real numbers, and there is no constraint on their range.
@@ -425,11 +425,11 @@ class Whisper(nn.Module):
         hooks = []
 
         def save_to_cache(module, _, output):
-            if module not in cache or output.shape[1] > self.dims.n_text_ctx:
+            if module not in cache or output.shape[1] > self.dims.n_text_ctx:                   # output.shape[1] > self.dims.n_text_ctx  <= What's this?
                 # save as-is, for the first token or cross attention
                 cache[module] = output
             else:
-                cache[module] = torch.cat([cache[module], output], dim=1).detach()
+                cache[module] = torch.cat([cache[module], output], dim=1).detach()              # This concatenates the tensors cache[module] and output along the second dimension (dim=1)
             return cache[module]
 
         def install_hooks(layer: nn.Module):

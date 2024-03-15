@@ -185,7 +185,7 @@ class PyTorchInference(Inference):
 
         if tokens.shape[-1] > self.initial_token_length:            # if the size of last dim of tokens tensor is bigger than initial_token_length 
             # only need to use the last token except in the first forward pass
-            tokens = tokens[:, -1:]
+            tokens = tokens[:, -1:]                                 # creates a new dimension (slice with length 1) along the last axis
 
         return self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache)
 
